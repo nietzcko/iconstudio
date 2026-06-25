@@ -258,6 +258,27 @@
     color: var(--muted);
   }
   #bevel button { padding: 6px 10px; font-size: 11px; }
+  .color-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .color-row span { flex: 0 0 auto; }
+  .color-row input[type=color] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 30px; height: 24px;
+    border: 1px solid var(--line);
+    background: none;
+    cursor: pointer;
+    padding: 0;
+  }
+  .color-row input[type=color]::-webkit-color-swatch-wrapper { padding: 2px; }
+  .color-row input[type=color]::-webkit-color-swatch { border: none; }
+  .color-row input[type=color]:disabled { opacity: .4; cursor: not-allowed; }
+  .color-row input[type=range] { flex: 1; }
 
   @media (max-width: 820px) {
     body { grid-template-columns: 1fr; }
@@ -318,6 +339,21 @@
           <span class="slider"></span>
         </label>
       </div>
+
+      <div class="fx-head" style="margin-top:14px">
+        <span>Border</span>
+        <label class="switch">
+          <input type="checkbox" id="borderOn">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="row" style="margin-top:6px"><span>Width</span><span class="val" id="borderWidthVal">4%</span></div>
+      <input type="range" id="borderWidth" min="0" max="20" value="4" disabled>
+      <div class="color-row" style="margin-top:8px">
+        <span>Color</span>
+        <input type="color" id="borderColor" value="#15130f" disabled>
+        <input type="range" id="borderAlpha" min="0" max="100" value="100" disabled title="Opacity">
+      </div>
     </div>
 
     <div class="field">
@@ -332,6 +368,8 @@
       </div>
       <div class="row" style="margin-top:6px"><span>Shadow strength</span><span class="val" id="shadowVal">50%</span></div>
       <input type="range" id="shadowStrength" min="0" max="100" value="50" disabled>
+      <div class="row" style="margin-top:6px"><span>Shadow softness</span><span class="val" id="shadowBlurVal">50%</span></div>
+      <input type="range" id="shadowBlur" min="0" max="100" value="50" disabled>
 
       <div class="fx-head" style="margin-top:14px">
         <span>Bevel</span>
@@ -343,6 +381,8 @@
       </div>
       <div class="row" style="margin-top:8px"><span>Bevel strength</span><span class="val" id="bevelVal">50%</span></div>
       <input type="range" id="bevelStrength" min="0" max="100" value="50" disabled>
+      <div class="row" style="margin-top:6px"><span>Bevel softness</span><span class="val" id="bevelBlurVal">50%</span></div>
+      <input type="range" id="bevelBlur" min="0" max="100" value="50" disabled>
     </div>
 
     <div class="field">
@@ -374,12 +414,21 @@
   const margin  = document.getElementById('margin');
   const marginVal = document.getElementById('marginVal');
   const circle  = document.getElementById('circle');
+  const borderOn = document.getElementById('borderOn');
+  const borderWidth = document.getElementById('borderWidth');
+  const borderWidthVal = document.getElementById('borderWidthVal');
+  const borderColor = document.getElementById('borderColor');
+  const borderAlpha = document.getElementById('borderAlpha');
   const shadowOn = document.getElementById('shadowOn');
   const shadowStrength = document.getElementById('shadowStrength');
   const shadowVal = document.getElementById('shadowVal');
+  const shadowBlur = document.getElementById('shadowBlur');
+  const shadowBlurVal = document.getElementById('shadowBlurVal');
   const bevel   = document.getElementById('bevel');
   const bevelStrength = document.getElementById('bevelStrength');
   const bevelVal = document.getElementById('bevelVal');
+  const bevelBlur = document.getElementById('bevelBlur');
+  const bevelBlurVal = document.getElementById('bevelBlurVal');
   const fitBtn  = document.getElementById('fit');
   const containBtn = document.getElementById('contain');
   const exportBtn  = document.getElementById('export');
@@ -429,6 +478,8 @@
     const r = circle.checked ? inner/2 : (radius.value/100) * inner;
     const sStr = shadowOn.checked ? shadowStrength.value / 100 : 0;
     const bStr = bevelMode !== 'none' ? bevelStrength.value / 100 : 0;
+    const sBlur = shadowBlur.value / 100;   // 0..1 shadow softness
+    const bBlur = bevelBlur.value / 100;    // 0..1 bevel softness
 
     // ---- the icon itself, rendered to an offscreen buffer (so effects can sample it) ----
     const buf = document.createElement('canvas');
@@ -448,11 +499,25 @@
     }
     bc.restore();
 
+    // ---- border, drawn into the same buffer so it follows the mask & sits under effects ----
+    if (borderOn.checked && +borderWidth.value > 0) {
+      const bw = (+borderWidth.value / 100) * inner;
+      bc.save();
+      // clip to shape so the stroke stays inside the mask (stroke is centered, inner half kept)
+      shapePath(bc, m, m, inner, inner, r);
+      bc.clip();
+      shapePath(bc, m, m, inner, inner, r);
+      bc.lineWidth = bw * 2; // doubled; outer half is clipped away -> crisp inner border
+      bc.strokeStyle = hexToRgba(borderColor.value, borderAlpha.value / 100);
+      bc.stroke();
+      bc.restore();
+    }
+
     // ---- drop shadow under the whole icon ----
     if (sStr > 0) {
       c.save();
       c.shadowColor = `rgba(0,0,0,${0.55 * sStr})`;
-      c.shadowBlur = inner * 0.10 * sStr;
+      c.shadowBlur = inner * (0.02 + 0.18 * sBlur) * sStr;
       c.shadowOffsetY = inner * 0.045 * sStr;
       c.drawImage(buf, 0, 0);
       c.restore();
@@ -463,25 +528,31 @@
     // ---- emboss / deboss: inner bevel highlight + shade along the shape edge ----
     if (bStr > 0) {
       const bv = Math.max(1, inner * 0.06 * bStr);
+      const blurPx = bv * (0.1 + 1.4 * bBlur); // softness scales the blur radius
       const lightUp = bevelMode === 'emboss';
       // light from top-left, shade bottom-right (flipped for deboss)
       const hi = `rgba(255,255,255,${0.85 * bStr})`;
       const lo = `rgba(0,0,0,${0.55 * bStr})`;
 
-      drawEdge(c, m, inner, r, bv, -1, -1, lightUp ? hi : lo); // top-left
-      drawEdge(c, m, inner, r, bv,  1,  1, lightUp ? lo : hi); // bottom-right
+      drawEdge(c, m, inner, r, bv, blurPx, -1, -1, lightUp ? hi : lo); // top-left
+      drawEdge(c, m, inner, r, bv, blurPx,  1,  1, lightUp ? lo : hi); // bottom-right
     }
   }
 
+  function hexToRgba(hex, a) {
+    const n = parseInt(hex.slice(1), 16);
+    return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`;
+  }
+
   // strokes a soft edge of the shape, clipped to the shape, offset toward (dx,dy)
-  function drawEdge(c, m, inner, r, bevel, dx, dy, color) {
+  function drawEdge(c, m, inner, r, bevel, blurPx, dx, dy, color) {
     c.save();
     shapePath(c, m, m, inner, inner, r);
     c.clip();
     shapePath(c, m + dx * bevel * 0.6, m + dy * bevel * 0.6, inner, inner, r);
     c.lineWidth = bevel;
     c.strokeStyle = color;
-    c.filter = `blur(${bevel * 0.5}px)`;
+    c.filter = `blur(${blurPx}px)`;
     c.stroke();
     c.restore();
   }
@@ -578,10 +649,15 @@
   });
   shadowOn.addEventListener('change', () => {
     shadowStrength.disabled = !shadowOn.checked;
+    shadowBlur.disabled = !shadowOn.checked;
     render();
   });
   shadowStrength.addEventListener('input', () => {
     shadowVal.textContent = shadowStrength.value + '%';
+    render();
+  });
+  shadowBlur.addEventListener('input', () => {
+    shadowBlurVal.textContent = shadowBlur.value + '%';
     render();
   });
   bevel.addEventListener('click', e => {
@@ -590,13 +666,32 @@
     [...bevel.children].forEach(c => c.classList.remove('active'));
     b.classList.add('active');
     bevelMode = b.dataset.bv;
-    bevelStrength.disabled = (bevelMode === 'none');
+    const off = (bevelMode === 'none');
+    bevelStrength.disabled = off;
+    bevelBlur.disabled = off;
     render();
   });
   bevelStrength.addEventListener('input', () => {
     bevelVal.textContent = bevelStrength.value + '%';
     render();
   });
+  bevelBlur.addEventListener('input', () => {
+    bevelBlurVal.textContent = bevelBlur.value + '%';
+    render();
+  });
+  borderOn.addEventListener('change', () => {
+    const off = !borderOn.checked;
+    borderWidth.disabled = off;
+    borderColor.disabled = off;
+    borderAlpha.disabled = off;
+    render();
+  });
+  borderWidth.addEventListener('input', () => {
+    borderWidthVal.textContent = borderWidth.value + '%';
+    render();
+  });
+  borderColor.addEventListener('input', render);
+  borderAlpha.addEventListener('input', render);
   fitBtn.addEventListener('click', doFit);
   containBtn.addEventListener('click', doContain);
 
